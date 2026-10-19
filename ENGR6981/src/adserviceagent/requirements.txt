@@ -6,3 +6,5 @@ grpcio
 grpcio-tools
 requests
 httpx
+dotenv
+langchain_ollama

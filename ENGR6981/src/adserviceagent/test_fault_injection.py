@@ -171,7 +171,7 @@ def main():
     os.environ["FAULT_MODE"] = "NONE"
     print_report(results)
 
-    out = os.path.join(os.path.dirname(__file__), "adserviceagent_fault_results.json")
+    out = os.path.join(os.path.dirname(__file__), "/results/adserviceagent_fault_results.json")
     with open(out, "w") as f:
         json.dump({"generated_at": datetime.now(timezone.utc).isoformat(), "results": results}, f, indent=2)
     print(f"  Results saved to: {out}\n")
