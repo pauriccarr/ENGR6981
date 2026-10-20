@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault Injection Dashboard</title>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --head:#f6f8fa;
+          --accent:#2563eb; --ok:#15803d; --bad:#b91c1c; --log:#0d1117; --logfg:#e6edf3; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#30363d; --head:#161b22;
+            --accent:#4493f8; --ok:#3fb950; --bad:#f85149; --log:#010409; --logfg:#e6edf3; } }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg);
+         margin:0 auto; max-width:1000px; padding:1.5rem 1rem 4rem; }
+  h1 { font-size:1.35rem; margin:0 0 .25rem; }
+  .sub { color:var(--muted); margin:0 0 1.2rem; font-size:.9rem; }
+  .bar { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:1rem; }
+  .tabs { display:flex; gap:.25rem; border-bottom:1px solid var(--line); margin-bottom:1rem; flex-wrap:wrap; }
+  .tab { padding:.5rem .9rem; border:1px solid transparent; border-bottom:none; background:none;
+         color:var(--muted); cursor:pointer; border-radius:6px 6px 0 0; font-size:.95rem; }
+  .tab.active { color:var(--fg); border-color:var(--line); background:var(--bg); margin-bottom:-1px;
+                font-weight:600; }
+  .tab .dot { display:inline-block; width:.5rem; height:.5rem; border-radius:50%; margin-left:.4rem;
+              background:var(--muted); }
+  .tab .dot.run { background:var(--accent); } .tab .dot.err { background:var(--bad); }
+  button { padding:.45rem .9rem; border:1px solid var(--line); border-radius:6px; background:var(--head);
+           color:var(--fg); cursor:pointer; font-size:.9rem; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .modes { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:.35rem .8rem;
+           margin:.8rem 0; }
+  .modes label { display:flex; gap:.4rem; align-items:center; font-family:ui-monospace,monospace; font-size:.85rem; }
+  table { border-collapse:collapse; width:100%; font-size:.88rem; margin-top:.8rem; }
+  th, td { border:1px solid var(--line); padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  th { background:var(--head); }
+  .ok { color:var(--ok); font-weight:600; } .bad { color:var(--bad); font-weight:600; }
+  .msg { color:var(--muted); font-size:.88rem; }
+  .err { color:var(--bad); font-size:.9rem; margin:.5rem 0; }
+  pre { background:var(--log); color:var(--logfg); padding:.8rem; border-radius:6px; max-height:300px;
+        overflow:auto; font-size:.78rem; white-space:pre-wrap; }
+  details summary { cursor:pointer; color:var(--muted); font-size:.9rem; margin-top:1rem; }
+</style>
+</head>
+<body>
+<h1>Fault Injection Dashboard</h1>
+<p class="sub">Runs each agent's fault-injection test suite inside its own pod and collects the results.</p>
+
+<div class="bar">
+  <button class="primary" id="runAll">Run all agents</button>
+  <button id="export">Download combined JSON</button>
+  <span class="msg" id="global"></span>
+</div>
+
+<div class="tabs" id="tabs"></div>
+<div id="panel"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+let agents = [], current = null;
+const modes = {};      // agent -> list of modes
+const selected = {};   // agent -> Set of selected modes
+const last = {};       // agent -> {running, err}
+const timers = {};
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  let body = null;
+  try { body = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((body && body.detail) || `HTTP ${r.status}`);
+  return body;
+}
+
+function renderTabs() {
+  $("#tabs").innerHTML = agents.map(a => {
+    const st = last[a] || {};
+    const dot = st.err ? "err" : st.running ? "run" : "";
+    return `<button class="tab ${a === current ? "active" : ""}" data-a="${esc(a)}">${esc(a)}<span class="dot ${dot}"></span></button>`;
+  }).join("");
+  document.querySelectorAll(".tab").forEach(b => b.onclick = () => { current = b.dataset.a; renderTabs(); renderPanel(); });
+}
+
+async function loadModes(a) {
+  if (modes[a]) return;
+  try {
+    const m = await api(`api/${a}/modes`);
+    modes[a] = m.modes || [];
+    selected[a] = new Set(modes[a]);
+    last[a] = { ...(last[a] || {}), err: null };
+  } catch (e) { last[a] = { err: e.message }; modes[a] = []; selected[a] = new Set(); }
+}
+
+async function renderPanel() {
+  const a = current; if (!a) { $("#panel").innerHTML = ""; return; }
+  await loadModes(a);
+  const err = (last[a] || {}).err;
+  $("#panel").innerHTML = `
+    ${err ? `<div class="err">${esc(err)}</div>` : ""}
+    <div class="modes">${modes[a].map(m =>
+      `<label><input type="checkbox" value="${esc(m)}" ${selected[a].has(m) ? "checked" : ""}> ${esc(m)}</label>`).join("")}</div>
+    <div class="bar">
+      <button class="primary" id="run">Run selected</button>
+      <button id="selAll">Select all</button><button id="selNone">Clear</button>
+      <button id="reload">Refresh</button>
+      <span class="msg" id="status"></span>
+    </div>
+    <div id="results"></div>
+    <details><summary>Log</summary><pre id="log">(no run yet)</pre></details>`;
+  document.querySelectorAll(".modes input").forEach(cb => cb.onchange = () =>
+    cb.checked ? selected[a].add(cb.value) : selected[a].delete(cb.value));
+  $("#selAll").onclick = () => { modes[a].forEach(m => selected[a].add(m)); renderPanel(); };
+  $("#selNone").onclick = () => { selected[a].clear(); renderPanel(); };
+  $("#reload").onclick = () => refresh(a);
+  $("#run").onclick = () => start(a);
+  refresh(a);
+}
+
+async function start(a) {
+  const chosen = [...selected[a]];
+  if (!chosen.length) { $("#status").textContent = "Select at least one mode"; return; }
+  try {
+    const r = await api(`api/${a}/run`, { method: "POST", headers: {"Content-Type":"application/json"},
+                                          body: JSON.stringify({ modes: chosen }) });
+    $("#status").textContent = r.status === "busy" ? "A run is already in progress" : "Started";
+  } catch (e) { last[a] = { err: e.message }; renderTabs(); renderPanel(); return; }
+  poll(a);
+}
+
+function poll(a) {
+  clearTimeout(timers[a]);
+  refresh(a).then(running => { if (running) timers[a] = setTimeout(() => poll(a), 1500); });
+}
+
+async function refresh(a) {
+  let running = false;
+  try {
+    const s = await api(`api/${a}/status`);
+    running = !!s.running;
+    last[a] = { running, err: null };
+    if (a === current) {
+      $("#status") && ($("#status").textContent = running ? "Running…" :
+        s.finished_at ? `Finished (exit ${s.returncode})` : "Idle");
+      $("#log") && ($("#log").textContent = s.log || (running ? "(running…)" : "(no run yet)"));
+      $("#run") && ($("#run").disabled = running);
+    }
+    const r = await api(`api/${a}/results`);
+    if (a === current) renderResults(r);
+  } catch (e) { last[a] = { running: false, err: e.message }; if (a === current) { $("#status") && ($("#status").textContent = e.message); } }
+  renderTabs();
+  return running;
+}
+
+function renderResults(r) {
+  const rows = r.results || [];
+  if (!rows.length) { $("#results").innerHTML = `<p class="msg">No results yet.</p>`; return; }
+  const withEvidence = rows.filter(x => x.fault_mode !== "NONE" && !x.error &&
+                                  ((x.steps_lost || []).length || x.infection_point)).length;
+  const faults = rows.filter(x => x.fault_mode !== "NONE").length;
+  const when = r.generated_at ? new Date(r.generated_at).toLocaleString() : "";
+  $("#results").innerHTML = `
+    <p class="msg">Last run: ${esc(when)} — faults with evidence: <b>${withEvidence} / ${faults}</b></p>
+    <table><thead><tr><th>Mode</th><th>Steps reached</th><th>Lost</th><th>Infection point</th><th>Prop.</th></tr></thead><tbody>
+    ${rows.map(x => x.error
+      ? `<tr><td>${esc(x.fault_mode)}</td><td colspan="4" class="bad">ERROR: ${esc(x.error)}</td></tr>`
+      : `<tr><td>${esc(x.fault_mode)}</td><td>${esc((x.steps_reached || []).join(" → "))}</td>
+         <td class="${(x.steps_lost || []).length ? "bad" : ""}">${esc((x.steps_lost || []).join(", ") || "-")}</td>
+         <td class="${x.infection_point ? "bad" : "ok"}">${esc(x.infection_point || "none")}</td>
+         <td>${esc(x.propagation_depth)}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+$("#runAll").onclick = async () => {
+  $("#global").textContent = "Starting all agents…";
+  try {
+    const r = await api("api/run-all", { method: "POST" });
+    const msgs = Object.entries(r).map(([k, v]) => `${k}: ${v.status}${v.detail ? " (" + v.detail + ")" : ""}`);
+    $("#global").textContent = msgs.join(" · ");
+    agents.forEach(poll);
+  } catch (e) { $("#global").textContent = e.message; }
+};
+$("#export").onclick = () => { window.location = "api/export"; };
+
+(async () => {
+  agents = await api("api/agents");
+  current = agents[0] || null;
+  renderTabs(); renderPanel();
+})();
+</script>
+</body>
+</html>

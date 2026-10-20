@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault Injection Runner</title>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --head:#f6f8fa; --accent:#2563eb;
+          --ok:#15803d; --bad:#b91c1c; --log:#0d1117; --logfg:#e6edf3; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#30363d; --head:#161b22; --accent:#4493f8;
+            --ok:#3fb950; --bad:#f85149; --log:#010409; } }
+  body { font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg);
+         margin:0 auto; max-width:960px; padding:1.5rem 1rem 4rem; }
+  h1 { font-size:1.3rem; margin:0 0 1rem; }
+  .modes { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:.35rem .8rem; margin:.8rem 0; }
+  .modes label { display:flex; gap:.4rem; align-items:center; font-family:ui-monospace,monospace; font-size:.85rem; }
+  button { padding:.45rem .9rem; border:1px solid var(--line); border-radius:6px; background:var(--head);
+           color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  table { border-collapse:collapse; width:100%; font-size:.88rem; margin-top:1rem; }
+  th, td { border:1px solid var(--line); padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  th { background:var(--head); }
+  .ok { color:var(--ok); font-weight:600; } .bad { color:var(--bad); font-weight:600; }
+  .msg { color:var(--muted); font-size:.9rem; margin-left:.6rem; }
+  pre { background:var(--log); color:var(--logfg); padding:.8rem; border-radius:6px; max-height:300px;
+        overflow:auto; font-size:.78rem; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<h1 id="title">Fault Injection Runner</h1>
+<div class="modes" id="modes"></div>
+<button class="primary" id="run">Run selected</button>
+<button id="all">Select all</button>
+<button id="none">Clear</button>
+<span class="msg" id="status"></span>
+<div id="results"></div>
+<h3>Log</h3>
+<pre id="log">(no run yet)</pre>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let modes = [];
+const boxes = () => [...$("modes").querySelectorAll("input")];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`HTTP ${r.status} for ${path}`);
+  return r.json();
+}
+
+async function init() {
+  try {
+    const m = await api("ui/modes");
+    modes = m.modes || [];
+    $("title").textContent = `${m.agent} agent: fault injection`;
+    $("modes").innerHTML = modes.map(x =>
+      `<label><input type="checkbox" value="${esc(x)}" checked> ${esc(x)}</label>`).join("");
+  } catch (e) { $("status").textContent = e.message; }
+  poll();
+}
+
+function render(r) {
+  const rows = r.results || [];
+  if (!rows.length) { $("results").innerHTML = ""; return; }
+  const faults = rows.filter(x => x.fault_mode !== "NONE");
+  const ev = faults.filter(x => !x.error && ((x.steps_lost || []).length || x.infection_point)).length;
+  $("results").innerHTML = `<p class="msg">Faults with evidence: <b>${ev} / ${faults.length}</b></p>
+    <table><thead><tr><th>Mode</th><th>Steps reached</th><th>Lost</th><th>Infection point</th><th>Prop.</th></tr></thead><tbody>
+    ${rows.map(x => x.error
+      ? `<tr><td>${esc(x.fault_mode)}</td><td colspan="4" class="bad">ERROR: ${esc(x.error)}</td></tr>`
+      : `<tr><td>${esc(x.fault_mode)}</td><td>${esc((x.steps_reached || []).join(" → "))}</td>
+         <td class="${(x.steps_lost || []).length ? "bad" : ""}">${esc((x.steps_lost || []).join(", ") || "-")}</td>
+         <td class="${x.infection_point ? "bad" : "ok"}">${esc(x.infection_point || "none")}</td>
+         <td>${esc(x.propagation_depth)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+async function poll() {
+  try {
+    const s = await api("ui/status");
+    $("log").textContent = s.log || (s.running ? "(running…)" : "(no run yet)");
+    $("run").disabled = !!s.running;
+    $("status").textContent = s.running ? "Running…" : (s.finished_at ? `Finished (exit ${s.returncode})` : "Idle");
+    render(await api("ui/results"));
+    if (s.running) setTimeout(poll, 1500);
+  } catch (e) { $("status").textContent = e.message; }
+}
+
+$("all").onclick = () => boxes().forEach(b => b.checked = true);
+$("none").onclick = () => boxes().forEach(b => b.checked = false);
+$("run").onclick = async () => {
+  const chosen = boxes().filter(b => b.checked).map(b => b.value);
+  if (!chosen.length) { $("status").textContent = "Select at least one mode"; return; }
+  $("run").disabled = true;
+  try {
+    const r = await api("ui/run", { method: "POST", headers: {"Content-Type": "application/json"},
+                                    body: JSON.stringify({ modes: chosen }) });
+    if (r.status === "busy") $("status").textContent = "A run is already in progress";
+  } catch (e) { $("status").textContent = e.message; $("run").disabled = false; return; }
+  poll();
+};
+init();
+</script>
+</body>
+</html>

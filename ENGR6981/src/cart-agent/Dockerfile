@@ -6,7 +6,6 @@ COPY src/cartservice.csproj ./
 RUN dotnet restore
 
 COPY src/ ./
-COPY protos/ ../protos/
 RUN dotnet publish -c Release -o /out --no-restore
 
 # -- Runtime stage -------------------------------------------------------------

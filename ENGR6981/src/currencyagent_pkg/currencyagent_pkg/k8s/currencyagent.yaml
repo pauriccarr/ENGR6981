@@ -1,0 +1,92 @@
+# CurrencyAgent: deployed NEXT TO the real currencyservice, never in place of it.
+# The real currencyservice (port 7000, gRPC) keeps serving the frontend and checkout; this agent
+# calls it as a client (CURRENCY_HOST=currencyservice) and exposes an HTTP API + fault-injection UI hooks.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: currencyagent
+  labels:
+    app: currencyagent
+spec:
+  selector:
+    matchLabels:
+      app: currencyagent
+  template:
+    metadata:
+      labels:
+        app: currencyagent
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: server
+        image: ghcr.io/pauriccarr/engr-currency-agent:latest   # change to your image name
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+        ports:
+        - containerPort: 8080
+        env:
+        - name: AGENT_NAME
+          value: "currency"
+        # gRPC target of the REAL currency service (config.py: CURRENCY_HOST / CURRENCY_PORT)
+        - name: CURRENCY_HOST
+          value: "currencyservice"
+        - name: CURRENCY_PORT
+          value: "7000"
+        # Only used by the live /currency/query path (the fault-injection test mocks the LLM and gRPC).
+        # llama3.2:1b is one of the two models your ollama Deployment pulls.
+        - name: OLLAMA_HOST
+          value: "http://ollama:11434"
+        - name: LLAMA_MODEL
+          value: "llama3.2:1b"
+        - name: RESULTS_DIR
+          value: /results
+        volumeMounts:
+        - name: results
+          mountPath: /results
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: results
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: currencyagent
+  labels:
+    app: currencyagent
+spec:
+  type: ClusterIP
+  selector:
+    app: currencyagent
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
