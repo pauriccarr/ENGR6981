@@ -1,0 +1,116 @@
+# CurrencyAgent REPLACES the standalone currencyservice.
+# One pod, two ports:
+#   7000  gRPC hipstershop.CurrencyService (frontend/checkout keep calling currencyservice:7000)
+#   8080  HTTP API + fault-injection UI hooks (the faultlab dashboard calls currencyagent:8080)
+# Do NOT also deploy the upstream currencyservice Deployment/Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: currencyagent
+  labels:
+    app: currencyagent
+spec:
+  selector:
+    matchLabels:
+      app: currencyagent
+  template:
+    metadata:
+      labels:
+        app: currencyagent
+    spec:
+      serviceAccountName: currencyservice
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: server
+        image: ghcr.io/pauriccarr/engr-currency-agent:latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+        ports:
+        - name: grpc
+          containerPort: 7000
+        - name: http
+          containerPort: 8080
+        env:
+        - name: AGENT_NAME
+          value: "currency"
+        - name: GRPC_PORT
+          value: "7000"
+        # The agent calls its own embedded gRPC server (default 127.0.0.1:7000). Do NOT set
+        # CURRENCY_HOST=currencyservice: that Service now points back at this pod.
+        - name: OLLAMA_HOST
+          value: "http://ollama:11434"
+        - name: LLAMA_MODEL
+          value: "llama3.2:1b"
+        - name: RESULTS_DIR
+          value: /results
+        volumeMounts:
+        - name: results
+          mountPath: /results
+        readinessProbe:
+          grpc:
+            port: 7000
+          initialDelaySeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: results
+        emptyDir: {}
+---
+# Same name/port the frontend, checkout and recommendation services already use.
+apiVersion: v1
+kind: Service
+metadata:
+  name: currencyservice
+  labels:
+    app: currencyagent
+spec:
+  type: ClusterIP
+  selector:
+    app: currencyagent
+  ports:
+  - name: grpc
+    port: 7000
+    targetPort: 7000
+---
+# HTTP side, used by the faultlab dashboard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: currencyagent
+  labels:
+    app: currencyagent
+spec:
+  type: ClusterIP
+  selector:
+    app: currencyagent
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: currencyservice

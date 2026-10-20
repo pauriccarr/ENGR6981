@@ -1,5 +1,7 @@
 import importlib
+import os
 from app.grpc_client import ProductCatalogGrpcClient
+from app.catalog import LocalCatalog
 import app.fault_injection as fi
 
 try:
@@ -17,7 +19,8 @@ except ImportError:  # pragma: no cover - fallback for isolated agent execution
             "violations": [],
         }
 
-client = ProductCatalogGrpcClient()
+# Serve the catalog in-process unless an external catalog is explicitly configured.
+client = ProductCatalogGrpcClient() if os.getenv("PRODUCT_CATALOG_HOST") else LocalCatalog()
 
 
 class ProductCatalogAgent:

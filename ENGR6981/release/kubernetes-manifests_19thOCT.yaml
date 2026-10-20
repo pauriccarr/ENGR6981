@@ -87,6 +87,7 @@ spec:
       labels:
         app: currencyagent
     spec:
+      serviceAccountName: currencyservice
       enableServiceLinks: false
       terminationGracePeriodSeconds: 5
       securityContext:
@@ -96,7 +97,7 @@ spec:
         runAsUser: 1000
       containers:
       - name: server
-        image: ghcr.io/pauriccarr/engr-currency-agent:latest   # change to your image name
+        image: ghcr.io/pauriccarr/engr-currency-agent:latest
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -106,17 +107,17 @@ spec:
           privileged: false
           readOnlyRootFilesystem: true
         ports:
-        - containerPort: 8080
+        - name: grpc
+          containerPort: 7000
+        - name: http
+          containerPort: 8080
         env:
         - name: AGENT_NAME
           value: "currency"
-        # gRPC target of the REAL currency service (config.py: CURRENCY_HOST / CURRENCY_PORT)
-        - name: CURRENCY_HOST
-          value: "currencyservice"
-        - name: CURRENCY_PORT
+        - name: GRPC_PORT
           value: "7000"
-        # Only used by the live /currency/query path (the fault-injection test mocks the LLM and gRPC).
-        # llama3.2:1b is one of the two models your ollama Deployment pulls.
+        # The agent calls its own embedded gRPC server (default 127.0.0.1:7000). Do NOT set
+        # CURRENCY_HOST=currencyservice: that Service now points back at this pod.
         - name: OLLAMA_HOST
           value: "http://ollama:11434"
         - name: LLAMA_MODEL
@@ -127,10 +128,9 @@ spec:
         - name: results
           mountPath: /results
         readinessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 10
+          grpc:
+            port: 7000
+          initialDelaySeconds: 5
         livenessProbe:
           httpGet:
             path: /health
@@ -147,6 +147,23 @@ spec:
       - name: results
         emptyDir: {}
 ---
+# Same name/port the frontend, checkout and recommendation services already use.
+apiVersion: v1
+kind: Service
+metadata:
+  name: currencyservice
+  labels:
+    app: currencyagent
+spec:
+  type: ClusterIP
+  selector:
+    app: currencyagent
+  ports:
+  - name: grpc
+    port: 7000
+    targetPort: 7000
+---
+# HTTP side, used by the faultlab dashboard.
 apiVersion: v1
 kind: Service
 metadata:
@@ -160,7 +177,7 @@ spec:
   ports:
   - name: http
     port: 8080
-    targetPort: 8080s
+    targetPort: 8080
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -254,6 +271,7 @@ kind: ServiceAccount
 metadata:
   name: loadgenerator
 ---
+# Replaces the productcatalogservice Deployment + Service. Agent only, no original catalog.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -285,22 +303,36 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/productcatalogservice:v0.10.7
+        image: ghcr.io/pauriccarr/engr-productcatelog-agent:latest
+        imagePullPolicy: Always
         ports:
-        - containerPort: 3550
+        - name: grpc
+          containerPort: 3550
+        - name: http
+          containerPort: 8080
         env:
-        - name: PORT
+        - name: GRPC_PORT
           value: "3550"
+        # Leave PRODUCT_CATALOG_HOST unset: the agent serves products.json in-process.
+        - name: FAULT_MODE
+          value: "NONE"
         - name: OLLAMA_SERVICE_URL
           value: "http://ollama.pauric-test.svc.cluster.local:11434"
         - name: DISABLE_PROFILER
           value: "1"
+        - name: RESULTS_DIR
+          value: /results
+        volumeMounts:
+        - name: results
+          mountPath: /results
         readinessProbe:
-          tcpSocket:
+          grpc:
             port: 3550
+          initialDelaySeconds: 5
         livenessProbe:
-          tcpSocket:
+          grpc:
             port: 3550
+          initialDelaySeconds: 10
         resources:
           requests:
             cpu: 100m
@@ -308,6 +340,9 @@ spec:
           limits:
             cpu: 200m
             memory: 512Mi
+      volumes:
+      - name: results
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -323,6 +358,11 @@ spec:
   - name: grpc
     port: 3550
     targetPort: 3550
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -378,7 +418,7 @@ spec:
           - name: PAYMENT_SERVICE_ADDR
             value: "paymentservice:50051"
           - name: EMAIL_SERVICE_ADDR
-            value: "emailservice:5000"
+            value: "emailserviceagent:5000"
           - name: CURRENCY_SERVICE_ADDR
             value: "currencyservice:7000"
           - name: CART_SERVICE_ADDR
@@ -475,13 +515,6 @@ spec:
           value: "http://ollama.pauric-test.svc.cluster.local:11434"
         - name: LLAMA_MODEL
           value: "llama3:llama3.2:1b"
-        readinessProbe:
-          periodSeconds: 5
-          grpc:
-            port: 50051
-        livenessProbe:
-          grpc:
-            port: 50051
         resources:
           requests:
             cpu: 100m
@@ -662,19 +695,19 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: emailservice
+  name: emailserviceagent
   labels:
-    app: emailservice
+    app: emailserviceagent
 spec:
   selector:
     matchLabels:
-      app: emailservice
+      app: emailserviceagent
   template:
     metadata:
       labels:
-        app: emailservice
+        app: emailserviceagent
     spec:
-      serviceAccountName: emailservice
+      serviceAccountName: emailserviceagent
       enableServiceLinks: false
       terminationGracePeriodSeconds: 5
       securityContext:
@@ -729,13 +762,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: emailservice
+  name: emailserviceagent
   labels:
-    app: emailservice
+    app: emailserviceagent
 spec:
   type: ClusterIP
   selector:
-    app: emailservice
+    app: emailserviceagent
   ports:
   - name: grpc
     port: 5000
@@ -744,7 +777,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: emailservice
+  name: emailserviceagent
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1126,7 +1159,7 @@ metadata:
   name: faultlab-dashboard
 data:
   AGENTS: |
-    {"email": "http://emailservice:5000",
+    {"email": "http://emailserviceagent:5000",
      "ad": "http://adserviceagent:8080"}
 ---
 apiVersion: v1

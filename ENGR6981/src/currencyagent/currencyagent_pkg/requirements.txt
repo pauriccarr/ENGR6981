@@ -1,0 +1,13 @@
+langchain>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.2.0
+langchain-ollama>=0.2.0
+# app/clients/demo_pb2*.py were generated with grpcio-tools 1.80.0 / protobuf 6.31.1.
+# The generated code refuses to load on an older grpcio, and needs protobuf >= its gencode version.
+grpcio>=1.80.0
+grpcio-health-checking>=1.80.0
+protobuf>=6.31.1
+python-dotenv>=1.0.0
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0

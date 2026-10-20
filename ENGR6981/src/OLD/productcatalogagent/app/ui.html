@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault Injection Runner</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 900px; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.4rem; }
+  .modes { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .4rem; margin: 1rem 0; }
+  label { display: flex; gap: .4rem; align-items: center; }
+  button { padding: .5rem 1rem; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  button.secondary { background: #e5e7eb; color: #222; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: .9rem; }
+  th, td { border: 1px solid #d1d5db; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .ok { color: #15803d; font-weight: 600; }
+  .bad { color: #b91c1c; font-weight: 600; }
+  pre { background: #111827; color: #e5e7eb; padding: .8rem; border-radius: 6px; max-height: 280px; overflow: auto; font-size: .8rem; }
+  #status { margin-left: .8rem; color: #555; }
+</style>
+</head>
+<body>
+<h1>ProductCatelogAgent Fault Injection</h1>
+
+<div class="modes" id="modes"></div>
+<button id="run">Run selected</button>
+<button class="secondary" id="all">Select all</button>
+<button class="secondary" id="none">Clear</button>
+<span id="status"></span>
+
+<table id="results" hidden>
+  <thead><tr><th>Mode</th><th>Steps reached</th><th>Lost</th><th>Infection point</th><th>Prop.</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<h3>Log</h3>
+<pre id="log">(no run yet)</pre>
+
+<script>
+const MODES = ["NONE","FM_3_1","FM_2_2","FM_2_5","FM_1_2",
+               "BL_SEND_SKIPPED","BL_DOUBLE_SEND","BL_CORRUPTED_BODY","BL_WRONG_CUSTOMER"];
+const $ = id => document.getElementById(id);
+const modesDiv = $("modes");
+MODES.forEach(m => {
+  const l = document.createElement("label");
+  l.innerHTML = `<input type="checkbox" value="${m}" checked> ${m}`;
+  modesDiv.appendChild(l);
+});
+const boxes = () => [...modesDiv.querySelectorAll("input")];
+$("all").onclick  = () => boxes().forEach(b => b.checked = true);
+$("none").onclick = () => boxes().forEach(b => b.checked = false);
+
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+async function loadResults() {
+  const r = await (await fetch("ui/results")).json();
+  const rows = r.results || [];
+  $("results").hidden = rows.length === 0;
+  $("results").querySelector("tbody").innerHTML = rows.map(x => {
+    if (x.error) return `<tr><td>${esc(x.fault_mode)}</td><td colspan="4" class="bad">ERROR: ${esc(x.error)}</td></tr>`;
+    const inf = x.infection_point;
+    return `<tr><td>${esc(x.fault_mode)}</td>
+      <td>${esc((x.steps_reached||[]).join(" → "))}</td>
+      <td class="${x.steps_lost && x.steps_lost.length ? "bad" : ""}">${esc((x.steps_lost||[]).join(", ") || "-")}</td>
+      <td class="${inf ? "bad" : "ok"}">${esc(inf || "none")}</td>
+      <td>${esc(x.propagation_depth)}</td></tr>`;
+  }).join("");
+}
+
+async function poll() {
+  const s = await (await fetch("ui/status")).json();
+  $("log").textContent = s.log || "(running...)";
+  if (s.running) { $("status").textContent = "Running..."; setTimeout(poll, 1500); }
+  else { $("status").textContent = "Idle"; $("run").disabled = false; loadResults(); }
+}
+
+$("run").onclick = async () => {
+  const modes = boxes().filter(b => b.checked).map(b => b.value);
+  if (!modes.length) { $("status").textContent = "Select at least one mode"; return; }
+  $("run").disabled = true;
+  $("status").textContent = "Starting...";
+  const r = await (await fetch("ui/run", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({modes})
+  })).json();
+  if (r.status === "busy") $("status").textContent = "A run is already in progress";
+  poll();
+};
+
+loadResults();
+poll();
+</script>
+</body>
+</html>
+

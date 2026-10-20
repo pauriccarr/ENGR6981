@@ -1,0 +1,107 @@
+# Fault injection dashboard. Apply with:  kubectl apply -f dashboard.yaml
+# Reach it with:  kubectl port-forward svc/faultlab-dashboard 8000:8000   -> http://localhost:8000
+#
+# Edit the AGENTS map below to match your Service names/ports. Use the Service port, not the container port:
+#   emailservice maps port 5000 -> 8080, so its URL is http://emailservice:5000
+#   adserviceagent (see agent note in README) listens on 8080 -> http://adserviceagent:8080
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: faultlab-dashboard
+data:
+  AGENTS: |
+    {"email": "http://emailservice:5000",
+     "ad": "http://adserviceagent:8080",
+     "currency": "http://currencyagent:8080"}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: faultlab-dashboard
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faultlab-dashboard
+  labels:
+    app: faultlab-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: faultlab-dashboard
+  template:
+    metadata:
+      labels:
+        app: faultlab-dashboard
+    spec:
+      serviceAccountName: faultlab-dashboard
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: server
+        image: ghcr.io/pauriccarr/engr-faultlab-dashboard:latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+        ports:
+        - containerPort: 8000
+        env:
+        - name: AGENTS
+          valueFrom:
+            configMapKeyRef:
+              name: faultlab-dashboard
+              key: AGENTS
+        - name: DATA_DIR
+          value: /data
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 10
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+      volumes:
+      # emptyDir keeps saved exports only until the pod restarts. For durable history swap this for a
+      # PersistentVolumeClaim (see README).
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faultlab-dashboard
+  labels:
+    app: faultlab-dashboard
+spec:
+  type: ClusterIP
+  selector:
+    app: faultlab-dashboard
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
